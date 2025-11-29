@@ -1,0 +1,87 @@
+services:
+  # Base de datos PostgreSQL
+  postgres:
+    image: postgres:15
+    container_name: guarderia_db
+    environment:
+      POSTGRES_USER: guarderia_user
+      POSTGRES_PASSWORD: guarderia_password
+      POSTGRES_DB: guarderia_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/src/database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - guarderia_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guarderia_user -d guarderia_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis para sesiones y cache
+  redis:
+    image: redis:7-alpine
+    container_name: guarderia_redis
+    ports:
+      - "6379:6379"
+    networks:
+      - guarderia_network
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: guarderia_backend
+    env_file:
+      - .env  # Load environment variables from root .env file
+    environment:
+      # Docker-specific overrides (these override values from .env)
+      - DB_HOST=postgres  # Use Docker service name instead of localhost
+      - DATABASE_URL=postgresql://guarderia_user:guarderia_password@postgres:5432/guarderia_db
+      - REDIS_URL=redis://redis:6379
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./backend:/app
+      - ./uploads:/app/uploads
+    networks:
+      - guarderia_network
+    restart: unless-stopped
+
+  # Frontend React/Next.js
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: guarderia_frontend
+    env_file:
+      - .env  # Load environment variables from root .env file
+    environment:
+      # Frontend-specific overrides (these override values from .env)
+      - PORT=3000  # Frontend must run on port 3000, not 4000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    networks:
+      - guarderia_network
+
+volumes:
+  postgres_data:
+
+networks:
+  guarderia_network:
+    driver: bridge
