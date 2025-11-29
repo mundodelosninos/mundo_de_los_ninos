@@ -1,0 +1,80 @@
+# Multi-stage build para Next.js optimizado
+FROM node:18-alpine AS deps
+
+WORKDIR /app
+
+# Instalar dependencias necesarias
+RUN apk add --no-cache libc6-compat
+
+# Copiar archivos de dependencias
+COPY package*.json ./
+
+# Instalar dependencias
+RUN npm ci
+
+# Builder stage
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+# Copiar node_modules desde deps
+COPY --from=deps /app/node_modules ./node_modules
+
+# Copiar código fuente
+COPY . .
+
+# Variables de entorno para build
+# Render automatically passes environment variables to Docker build
+ARG NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+ARG NEXT_PUBLIC_SOCKET_URL=${NEXT_PUBLIC_SOCKET_URL}
+ARG NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID}
+ARG NEXT_PUBLIC_FACEBOOK_APP_ID=${NEXT_PUBLIC_FACEBOOK_APP_ID}
+
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_SOCKET_URL=$NEXT_PUBLIC_SOCKET_URL
+ENV NEXT_PUBLIC_GOOGLE_CLIENT_ID=$NEXT_PUBLIC_GOOGLE_CLIENT_ID
+ENV NEXT_PUBLIC_FACEBOOK_APP_ID=$NEXT_PUBLIC_FACEBOOK_APP_ID
+
+# Configurar Next.js para standalone output
+ENV NEXT_TELEMETRY_DISABLED 1
+
+# Build Next.js
+RUN npm run build
+
+# Runner stage - imagen final
+FROM node:18-alpine AS runner
+
+WORKDIR /app
+
+# Configurar entorno de producción
+ENV NODE_ENV production
+ENV NEXT_TELEMETRY_DISABLED 1
+
+# Instalar solo dependencias runtime necesarias
+RUN apk add --no-cache curl
+
+# Crear usuario no-root
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 nextjs
+
+# Copiar archivos necesarios de Next.js
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+# Cambiar a usuario no-root
+USER nextjs
+
+# Exponer puerto
+EXPOSE 3000
+
+# Variables de entorno runtime
+ENV PORT 3000
+ENV HOSTNAME "0.0.0.0"
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:3000 || exit 1
+
+# Iniciar servidor Next.js
+CMD ["node", "server.js"]
